@@ -18,6 +18,13 @@
 #include <osmium/handler/node_locations_for_ways.hpp>
 #include <fcntl.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <libkern/OSByteOrder.h>
+#define htole16(x) OSSwapHostToLittleInt16(x)
+#define le16toh(x) OSSwapLittleToHostInt16(x)
+#else
+#include <endian.h>
+#endif
 #include <osmium/index/map/sparse_file_array.hpp>
 #include <osmium/area/assembler.hpp>
 #include <osmium/area/multipolygon_manager.hpp>
@@ -36,7 +43,7 @@
 
 struct WayHeader {
     uint32_t node_offset;
-    uint8_t node_count;
+    uint16_t node_count;
     uint32_t name_id;
 };
 
@@ -52,7 +59,7 @@ struct AddrPoint {
 
 struct InterpWay {
     uint32_t node_offset;
-    uint8_t node_count;
+    uint16_t node_count;
     uint32_t street_id;
     uint32_t start_number;
     uint32_t end_number;
@@ -670,7 +677,7 @@ private:
 
         InterpWay iw{};
         iw.node_offset = node_offset;
-        iw.node_count = static_cast<uint8_t>(std::min(wnodes.size(), size_t(255)));
+        iw.node_count = htole16(static_cast<uint16_t>(std::min(wnodes.size(), size_t(UINT16_MAX))));
         iw.street_id = strings.intern(street);
         iw.start_number = 0;
         iw.end_number = 0;
@@ -716,7 +723,7 @@ private:
 
         WayHeader header{};
         header.node_offset = node_offset;
-        header.node_count = static_cast<uint8_t>(std::min(wnodes.size(), size_t(255)));
+        header.node_count = htole16(static_cast<uint16_t>(std::min(wnodes.size(), size_t(UINT16_MAX))));
         header.name_id = strings.intern(name);
         ways.push_back(header);
 
@@ -768,7 +775,7 @@ static void resolve_interpolation_endpoints() {
 
     uint32_t resolved = 0;
     for (auto& iw : interp_ways) {
-        if (iw.node_count < 2) continue;
+        if (le16toh(iw.node_count) < 2) continue;
 
         const auto& start = interp_nodes[iw.node_offset];
         CoordKey start_key{
@@ -777,7 +784,7 @@ static void resolve_interpolation_endpoints() {
         };
         auto it_start = addr_by_coord.find(start_key);
 
-        const auto& end = interp_nodes[iw.node_offset + iw.node_count - 1];
+        const auto& end = interp_nodes[iw.node_offset + le16toh(iw.node_count) - 1];
         CoordKey end_key{
             static_cast<int32_t>(end.lat * 100000),
             static_cast<int32_t>(end.lng * 100000)
