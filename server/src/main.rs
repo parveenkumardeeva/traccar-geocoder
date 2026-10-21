@@ -319,6 +319,7 @@ impl Index {
                 seen_streets[slot] = id;
 
                 let way = &all_ways[id as usize];
+                if way.name_id == 0 { return; }
                 let offset = way.node_offset as usize;
                 let count = u16::from_le(way.node_count) as usize;
                 let nodes = &all_street_nodes[offset..offset + count];
