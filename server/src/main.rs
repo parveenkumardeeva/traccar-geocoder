@@ -479,7 +479,19 @@ impl Index {
                     let semantic = node.semantic as usize;
                     if semantic == SEM_NONE as usize || semantic >= SEM_COUNT { return; }
                     if best_by_semantic[semantic].is_some() { return; }
-                    if node.country_code != 0 && node.country_code != country { return; }
+                    let node_country = if node.country_code == 0 {
+    0
+} else {
+    let [a, b] = node.country_code.to_be_bytes();
+    u16::from_be_bytes([
+        a.to_ascii_uppercase(),
+        b.to_ascii_uppercase(),
+    ])
+};
+
+if node_country != 0 && node_country != country {
+    return;
+}
                     let dx = node.lat - qlat;
                     let dy = node.lng - qlng;
                     let dist = dx * dx + dy * dy;
