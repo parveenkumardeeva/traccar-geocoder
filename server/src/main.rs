@@ -605,11 +605,13 @@ if node_country != 0 && node_country != country {
             road,
             suburb,
             city,
+            state_district: admin.state_district,
             state: admin.state,
             county: admin.county,
             postcode,
             country: admin.country,
-            country_code: admin.country_code.map(|c| String::from_utf8_lossy(&c).into_owned()),
+            country_code: admin.country_code
+                .map(|c| String::from_utf8_lossy(&c).into_owned()),
         };
         let display_name = format_address(&address);
         Address { display_name, address }
@@ -745,12 +747,13 @@ fn point_in_polygon(lat: f32, lng: f32, vertices: &[NodeCoord]) -> bool {
 #[derive(Default)]
 struct AdminResult<'a> {
     country: Option<&'a str>,
-    country_code: Option<[u8; 2]>,
-    state: Option<&'a str>,
-    county: Option<&'a str>,
-    city: Option<&'a str>,
-    suburb: Option<&'a str>,
-    postcode: Option<&'a str>,
+        country_code: Option<[u8; 2]>,
+        state: Option<&'a str>,
+        state_district: Option<&'a str>,
+        county: Option<&'a str>,
+        city: Option<&'a str>,
+        suburb: Option<&'a str>,
+        postcode: Option<&'a str>,
 }
 
 #[derive(Serialize, Default)]
@@ -763,6 +766,8 @@ struct AddressDetails<'a> {
     suburb: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     city: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    state_district: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     state: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -809,71 +814,82 @@ fn format_rules(country_code: Option<&str>) -> (bool, bool, bool) {
 }
 
 fn format_address(addr: &AddressDetails<'_>) -> Option<String> {
-    if addr.road.is_none() && addr.city.is_none() && addr.country.is_none() {
+    if addr.road.is_none()
+        && addr.city.is_none()
+        && addr.state_district.is_none()
+        && addr.county.is_none()
+        && addr.state.is_none()
+        && addr.country.is_none()
+    {
         return None;
     }
 
-    let (number_after, postcode_before_city, include_state) = format_rules(addr.country_code.as_deref());
+    let (number_after, postcode_before_city, include_state) =
+        format_rules(addr.country_code.as_deref());
+
     let mut parts: Vec<String> = Vec::new();
 
-    // Street + house number
     if let Some(road) = addr.road {
-        if let Some(ref hn) = addr.house_number {
+        if let Some(ref house_number) = addr.house_number {
             if number_after {
-                parts.push(format!("{} {}", road, hn));
+                parts.push(format!("{} {}", road, house_number));
             } else {
-                parts.push(format!("{} {}", hn, road));
+                parts.push(format!("{} {}", house_number, road));
             }
         } else {
             parts.push(road.to_string());
         }
     }
 
-    // City + postcode + state
+    let mut location_parts: Vec<String> = Vec::new();
+
+    let push_unique = |parts: &mut Vec<String>, value: &str| {
+        if parts.last().map(String::as_str) != Some(value) {
+            parts.push(value.to_string());
+        }
+    };
+
     if postcode_before_city {
-        let mut city_part = String::new();
-        if let Some(pc) = addr.postcode {
-            city_part.push_str(pc);
-            city_part.push(' ');
-        }
-        if let Some(city) = addr.city {
-            city_part.push_str(city);
-        }
-        if include_state {
-            if let Some(state) = addr.state {
-                if !city_part.is_empty() { city_part.push_str(", "); }
-                city_part.push_str(state);
-            }
-        }
-        if !city_part.is_empty() {
-            parts.push(city_part.trim().to_string());
-        }
-    } else {
-        let mut city_part = String::new();
-        if let Some(city) = addr.city {
-            city_part.push_str(city);
-        }
-        if include_state {
-            if let Some(state) = addr.state {
-                if !city_part.is_empty() { city_part.push_str(", "); }
-                city_part.push_str(state);
-            }
-        }
-        if let Some(pc) = addr.postcode {
-            if !city_part.is_empty() { city_part.push(' '); }
-            city_part.push_str(pc);
-        }
-        if !city_part.is_empty() {
-            parts.push(city_part);
+        if let Some(postcode) = addr.postcode {
+            push_unique(&mut location_parts, postcode);
         }
     }
 
-    // Country
+    if let Some(city) = addr.city {
+        push_unique(&mut location_parts, city);
+    }
+
+    if let Some(district) = addr.state_district {
+        push_unique(&mut location_parts, district);
+    }
+
+    if let Some(county) = addr.county {
+        push_unique(&mut location_parts, county);
+    }
+
+    if include_state {
+        if let Some(state) = addr.state {
+            push_unique(&mut location_parts, state);
+        }
+    }
+
+    if !postcode_before_city {
+        if let Some(postcode) = addr.postcode {
+            push_unique(&mut location_parts, postcode);
+        }
+    }
+
     if let Some(country) = addr.country {
-        parts.push(country.to_string());
+        push_unique(&mut location_parts, country);
     }
 
-    if parts.is_empty() { None } else { Some(parts.join(", ")) }
+    parts.extend(location_parts);
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(", "))
+    }
 }
 
 #[derive(Deserialize)]
