@@ -36,6 +36,9 @@
 #include <s2/s2polygon.h>
 #include <s2/s2loop.h>
 #include <s2/s2builder.h>
+#include <s2/mutable_s2shape_index.h>
+#include <s2/s2lax_polyline_shape.h>
+#include <s2/s2shapeutil_visit_crossing_edge_pairs.h>
 
 #include "address_levels.hpp"
 
@@ -205,7 +208,10 @@ static std::vector<std::pair<S2CellId, bool>> cover_polygon(const std::vector<st
     S2Error error;
     auto loop = std::make_unique<S2Loop>(points, S2Debug::DISABLE);
     loop->Normalize();
-    if (loop->FindValidationError(&error)) return {};
+    if (loop->FindValidationError(&error)) {
+        std::cerr << "Skipping invalid polygon coverage: " << error.message() << std::endl;
+        return {};
+    }
 
     S2Polygon polygon(std::move(loop));
 
@@ -300,6 +306,46 @@ static float polygon_area(const std::vector<std::pair<double,double>>& vertices)
     return static_cast<float>(std::fabs(area) / 2.0);
 }
 
+// Restore original vertices along crossing edges
+static void repair_polygon(const std::vector<std::pair<double, double>>& points, std::vector<bool>& keep,
+                           size_t limit = std::numeric_limits<uint16_t>::max()) {
+    if (points.size() < 4) return;
+    size_t end = points.size() - (points.front() == points.back() ? 1 : 0);
+    size_t count = std::count(keep.begin(), keep.end(), true);
+    for (unsigned pass = 0; pass <= 32; ++pass) {
+        std::vector<size_t> ids;
+        std::vector<S2Point> vertices;
+        for (size_t i = 0; i < end; ++i) if (keep[i]) {
+            ids.push_back(i);
+            vertices.push_back(S2LatLng::FromDegrees(points[i].first, points[i].second).ToPoint());
+        }
+        if (ids.size() < 4) return;
+        vertices.push_back(vertices.front());
+        MutableS2ShapeIndex index;
+        index.Add(std::make_unique<S2LaxPolylineShape>(vertices));
+        std::vector<bool> conflicts(ids.size(), false);
+        s2shapeutil::VisitCrossingEdgePairs(index, s2shapeutil::CrossingType::ALL,
+            [&](const s2shapeutil::ShapeEdge& a, const s2shapeutil::ShapeEdge& b, bool) {
+                size_t i = a.id().edge_id, j = b.id().edge_id;
+                if (i != j && (i + 1) % ids.size() != j && (j + 1) % ids.size() != i) {
+                    conflicts[i] = conflicts[j] = true;
+                }
+                return true;
+            });
+        if (std::none_of(conflicts.begin(), conflicts.end(), [](bool conflict) { return conflict; })) return;
+        bool changed = false;
+        for (size_t i = 0; i < ids.size(); ++i) if (conflicts[i]) {
+            size_t start = ids[i], stop = i + 1 < ids.size() ? ids[i + 1] : end;
+            if (stop - start <= 1) continue;
+            if (pass == 32 || count >= limit) return;
+            keep[start + (stop - start) / 2] = true;
+            ++count;
+            changed = true;
+        }
+        if (!changed) return;
+    }
+}
+
 // Douglas-Peucker simplification
 static void dp_simplify(const std::vector<std::pair<double,double>>& pts,
                         size_t start, size_t end, double epsilon,
@@ -366,6 +412,8 @@ static std::vector<std::pair<double,double>> simplify_polygon(
     keep[0] = true;
     keep[pts.size() - 1] = true;
     dp_simplify(pts, 0, pts.size() - 1, hi, keep);
+
+    repair_polygon(pts, keep);
 
     result.clear();
     for (size_t i = 0; i < pts.size(); i++) {
